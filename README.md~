@@ -5,7 +5,9 @@
 [![Python Version](https://img.shields.io/badge/python-3.8%2B-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
+## 📸 Скриншоты
 
+![Пример работы бота](assets/WRB1.PNG)
 <!-- ![Бот в действии](https://example.com/bot-demo.gif) -->
 
 ## 🌟 Особенности
@@ -95,9 +97,6 @@ TIMEZONE = pytz.timezone("Europe/Moscow")  # Ваш часовой пояс
 ```
 🦈 Акулы используют воду для дыхания через жабры!
 ```
-## 📸 Скриншоты
-
-![Пример работы бота](/WRB1.PNG)
 
 ## 📄 Лицензия
 
