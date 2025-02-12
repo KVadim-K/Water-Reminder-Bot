@@ -5,10 +5,15 @@ import datetime
 import time
 import random
 import pytz
+import functools
+import requests
+from deep_translator import GoogleTranslator  # Используем deep-translator для синхронного перевода
 
 import telebot
+from telebot import types  # Для создания кастомной клавиатуры
 from dotenv import load_dotenv
 from pathlib import Path
+from models import Session, User, Admin
 
 # Загрузка .env
 env_path = Path(__file__).parent / ".env"
@@ -21,98 +26,93 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Загрузка токена
+# Инициализация бота
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-if not TOKEN:
-    logger.error("Токен не найден!")
-    exit(1)
-
 bot = telebot.TeleBot(TOKEN)
 
-# Конфигурация
-REMINDER_TIMES = ["09:00", "12:00", "15:00", "18:00", "21:00"]
-TIMEZONE = pytz.timezone("Europe/Moscow")  # Измените на вашу временную зону
-user_language = {}
+# Глобальный словарь для отслеживания потоков и времени последней отправки
 active_threads = {}
 
-# Тексты
+# Декоратор для обработки ошибок
+def error_handler(func):
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            logger.error(f"Error in {func.__name__}: {str(e)}", exc_info=True)
+    return wrapper
+
+# Вспомогательные функции
+def get_user(chat_id):
+    session = Session()
+    try:
+        user = session.query(User).filter_by(chat_id=chat_id).first()
+        if not user:
+            user = User(chat_id=chat_id)
+            session.add(user)
+            session.commit()
+        return user
+    finally:
+        session.close()
+
+def is_valid_time(time_str):
+    try:
+        datetime.datetime.strptime(time_str, "%H:%M")
+        return True
+    except ValueError:
+        return False
+
+# Тексты для сообщений
 texts = {
     "ru": {
-        "welcome": "Привет! Я буду напоминать тебе пить воду! Сейчас напоминания приходят в: " + ", ".join(
-            REMINDER_TIMES),
+        "welcome": "Привет! Я буду напоминать тебе пить воду!",
         "reminder": "💧 Пора выпить стакан воды!",
-        "fact": "Лови факт о воде:",
-        "facts": [...],  # Ваши факты
+        "fact": "Лови случайный факт:",
+        "help": ("Список команд:\n"
+                 "/start - Запуск бота\n"
+                 "/help - Справка\n"
+                 "/fact - Случайный факт\n"
+                 "/language - Смена языка\n"
+                 "/set_time - Настроить время\n"
+                 "/set_timezone - Установить часовой пояс\n"
+                 "/menu - Главное меню"),
+        "language_changed": "Язык изменен на русский",
+        "time_updated": "⏰ Расписание обновлено!",
+        "invalid_time": "❌ Неверный формат времени (используйте ЧЧ:ММ)",
+        "facts": [
+            "Интересный факт: Человек больше времени тратит на жевание, чем на сон.",
+            "Интересный факт: Мёд никогда не портится.",
+            "Интересный факт: У каждого человека уникальный запах тела."
+        ],
     },
-    "en": {...}  # Аналогично для английского
+    "en": {
+        "welcome": "Hello! I will remind you to drink water!",
+        "reminder": "💧 Time to drink water!",
+        "fact": "Random fact:",
+        "help": ("Commands:\n"
+                 "/start - Start bot\n"
+                 "/help - Help\n"
+                 "/fact - Random fact\n"
+                 "/language - Change language\n"
+                 "/set_time - Set schedule\n"
+                 "/set_timezone - Set timezone\n"
+                 "/menu - Main menu"),
+        "language_changed": "Language changed to English",
+        "time_updated": "⏰ Schedule updated!",
+        "invalid_time": "❌ Invalid time format (use HH:MM)",
+        "facts": [
+            "Interesting fact: A human spends more time chewing than sleeping.",
+            "Interesting fact: Honey never spoils.",
+            "Interesting fact: Every person has a unique body odor."
+        ],
+    }
 }
 
-
-def get_now():
-    """Возвращает текущее время в заданном часовом поясе"""
-    return datetime.datetime.now(TIMEZONE).strftime("%H:%M")
-
-
-@bot.message_handler(commands=["start"])
-def start_handler(message):
-    """Обработчик команды /start"""
+@bot.message_handler(commands=['set_timezone'])
+@error_handler
+def set_timezone_handler(message):
     chat_id = message.chat.id
-    user_language[chat_id] = "ru"
-
-    # Останавливаем предыдущий поток, если был
-    if chat_id in active_threads:
-        active_threads[chat_id]["running"] = False
-
-    # Запускаем новый поток
-    active_threads[chat_id] = {"running": True}
-    thread = threading.Thread(
-        target=reminder_loop,
-        args=(chat_id,),
-        daemon=True
-    )
-    thread.start()
-
-    bot.send_message(chat_id, texts["ru"]["welcome"])
-    logger.info(f"Пользователь {chat_id} запустил бота")
-
-
-def reminder_loop(chat_id):
-    """Основной цикл напоминаний"""
-    last_sent = None
-    while active_threads.get(chat_id, {}).get("running", False):
-        try:
-            now = get_now()
-
-            # Проверяем время каждые 10 секунд
-            if now in REMINDER_TIMES and now != last_sent:
-                lang = user_language.get(chat_id, "ru")
-                bot.send_message(chat_id, texts[lang]["reminder"])
-                logger.info(f"Отправлено напоминание {now} для {chat_id}")
-                last_sent = now
-
-                # Отправляем случайный факт
-                if random.random() < 0.3:  # 30% chance
-                    fact = random.choice(texts[lang]["facts"])
-                    bot.send_message(chat_id, f"{texts[lang]['fact']}\n{fact}")
-
-            time.sleep(10)
-
-        except Exception as e:
-            logger.error(f"Ошибка в потоке {chat_id}: {str(e)}")
-            time.sleep(60)
-
-
-@bot.message_handler(commands=["test"])
-def test_handler(message):
-    """Тестовая команда для немедленной проверки"""
-    chat_id = message.chat.id
-    lang = user_language.get(chat_id, "ru")
-    bot.send_message(chat_id, texts[lang]["reminder"])
-    logger.info(f"Тестовое напоминание отправлено {chat_id}")
-
-
-# ... остальные обработчики ...
-
-if __name__ == "__main__":
-    logger.info("Бот запущен")
-    bot.infinity_polling()
+    args = message.text.split()[1:]
+    if not args:
+        bot.send_message(chat_id, "❌ Укажите часовой пояс (например, Eur
