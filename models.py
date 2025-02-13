@@ -1,3 +1,5 @@
+# models.py
+
 from sqlalchemy import create_engine, Column, Integer, String, JSON
 from sqlalchemy.orm import declarative_base, sessionmaker
 

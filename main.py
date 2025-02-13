@@ -1,3 +1,5 @@
+# main.py
+
 import os
 import logging
 import threading
@@ -15,6 +17,21 @@ from dotenv import load_dotenv
 from pathlib import Path
 from models import Session, User, Admin
 
+# Настройка кастомной сессии requests с повторными попытками
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
+session_requests = requests.Session()
+retries = Retry(total=5, backoff_factor=1, status_forcelist=[502, 503, 504])
+adapter = HTTPAdapter(max_retries=retries)
+session_requests.mount("https://", adapter)
+session_requests.mount("http://", adapter)
+
+# Переопределяем глобальную сессию в telebot.apihelper
+import telebot.apihelper as apihelper
+
+apihelper._REQUEST_SESSION = session_requests
+
 # Загрузка .env
 env_path = Path(__file__).parent / ".env"
 load_dotenv(dotenv_path=env_path)
@@ -26,7 +43,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Инициализация бота
+# Инициализация бота без параметра request_session
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 bot = telebot.TeleBot(TOKEN)
 
@@ -48,16 +65,16 @@ def error_handler(func):
 
 # Вспомогательные функции
 def get_user(chat_id):
-    session = Session()
+    session_db = Session()
     try:
-        user = session.query(User).filter_by(chat_id=chat_id).first()
+        user = session_db.query(User).filter_by(chat_id=chat_id).first()
         if not user:
             user = User(chat_id=chat_id)
-            session.add(user)
-            session.commit()
+            session_db.add(user)
+            session_db.commit()
         return user
     finally:
-        session.close()
+        session_db.close()
 
 
 def is_valid_time(time_str):
@@ -127,18 +144,18 @@ def set_timezone_handler(message):
     if timezone_str not in pytz.all_timezones:
         bot.send_message(chat_id, "❌ Некорректный часовой пояс. Используйте, например, Europe/Moscow")
         return
-    session = Session()
+    session_db = Session()
     try:
-        user = session.query(User).filter_by(chat_id=chat_id).first()
+        user = session_db.query(User).filter_by(chat_id=chat_id).first()
         if not user:
             user = User(chat_id=chat_id, timezone=timezone_str)
-            session.add(user)
+            session_db.add(user)
         else:
             user.timezone = timezone_str
-        session.commit()
+        session_db.commit()
         bot.send_message(chat_id, f"✅ Часовой пояс изменён на {timezone_str}")
     finally:
-        session.close()
+        session_db.close()
 
 
 @bot.message_handler(commands=['start'])
@@ -146,11 +163,9 @@ def set_timezone_handler(message):
 def start_handler(message):
     chat_id = message.chat.id
     user = get_user(chat_id)
-    # Если для чата уже запущен reminder_loop – остановим его
     if chat_id in active_threads:
         active_threads[chat_id]["running"] = False
         time.sleep(3)
-    # Инициализируем данные для данного чата
     active_threads[chat_id] = {"running": True, "last_sent": None}
     thread = threading.Thread(target=reminder_loop, args=(chat_id,), daemon=True)
     thread.start()
@@ -184,36 +199,36 @@ def set_time_handler(message):
     if not times or not all(is_valid_time(t) for t in times):
         bot.send_message(chat_id, texts[get_user(chat_id).language]['invalid_time'])
         return
-    session = Session()
+    session_db = Session()
     try:
-        user = session.query(User).filter_by(chat_id=chat_id).first()
+        user = session_db.query(User).filter_by(chat_id=chat_id).first()
         if not user:
             user = User(chat_id=chat_id)
-            session.add(user)
+            session_db.add(user)
         user.reminder_times = times
-        session.commit()
+        session_db.commit()
         bot.send_message(chat_id, texts[user.language]['time_updated'])
         logger.info(f"[set_time_handler] chat_id={chat_id}, новое расписание: {times}")
     finally:
-        session.close()
+        session_db.close()
 
 
 @bot.message_handler(commands=['language'])
 @error_handler
 def language_handler(message):
     chat_id = message.chat.id
-    session = Session()
+    session_db = Session()
     try:
-        user = session.query(User).filter_by(chat_id=chat_id).first()
+        user = session_db.query(User).filter_by(chat_id=chat_id).first()
         if not user:
             user = User(chat_id=chat_id)
-            session.add(user)
+            session_db.add(user)
         new_lang = "en" if user.language == "ru" else "ru"
         user.language = new_lang
-        session.commit()
+        session_db.commit()
         bot.send_message(chat_id, texts[new_lang]['language_changed'])
     finally:
-        session.close()
+        session_db.close()
 
 
 @bot.message_handler(commands=['help'])
@@ -246,7 +261,7 @@ def fact_handler(message):
     user = get_user(chat_id)
     fact_text = ""
     try:
-        # Используем API Useless Facts для получения случайного интересного факта
+        # Используем API Useless Facts для получения случайного факта
         response = requests.get("https://uselessfacts.jsph.pl/random.json?language=en", timeout=10)
         if response.status_code == 200:
             data = response.json()
@@ -257,7 +272,6 @@ def fact_handler(message):
         logger.error(f"Ошибка при получении факта: {str(e)}", exc_info=True)
         fact_text = random.choice(texts[user.language]["facts"])
 
-    # Если язык установлен на русский — переводим факт
     if user.language == "ru" and fact_text:
         try:
             fact_text = GoogleTranslator(source='en', target='ru').translate(fact_text)
@@ -266,7 +280,6 @@ def fact_handler(message):
 
     bot.send_message(chat_id, f"{texts[user.language]['fact']}\n{fact_text}")
 
-    # Обновляем время последней отправки, чтобы избежать дублирования с напоминанием
     timezone = pytz.timezone(user.timezone)
     current_time = datetime.datetime.now(timezone).strftime("%H:%M")
     if chat_id in active_threads:
