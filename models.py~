@@ -1,8 +1,6 @@
 # models.py
 
-# models.py (добавляем новую модель)
-
-from sqlalchemy import create_engine, Column, Integer, String, JSON, Boolean, ForeignKey, DateTime
+from sqlalchemy import create_engine, Column, Integer, String, Boolean, ForeignKey, DateTime
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 import datetime
 
@@ -24,8 +22,9 @@ class Reminder(Base):
     __tablename__ = 'reminders'
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey('users.id'))
-    time = Column(String(5))  # "HH:MM"
+    time = Column(String(5))  # формат "HH:MM"
     active = Column(Boolean, default=True)
+    recurrence = Column(String(20), default=None)  # например, 'daily', 'weekly'
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
 

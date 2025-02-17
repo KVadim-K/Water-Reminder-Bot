@@ -6,7 +6,7 @@ import telebot
 # Инициализация бота
 bot = telebot.TeleBot(TOKEN)
 
-# Глобальный словарь для отслеживания потоков
+# Глобальный словарь для отслеживания потоков (для логики напоминаний, если нужна)
 active_threads = {}
 
 # Тексты для сообщений
@@ -19,8 +19,11 @@ texts = {
                  "/start - Запуск бота\n"
                  "/help - Справка\n"
                  "/fact - Случайный факт\n"
+                 "/add_reminder - Добавить напоминание\n"
+                 "/delete_reminder - Удалить напоминание\n"
+                 "/update_reminder - Обновить напоминание\n"
+                 "/list_reminders - Список напоминаний\n"
                  "/language - Смена языка\n"
-                 "/set_time - Настроить время\n"
                  "/set_timezone - Установить часовой пояс\n"
                  "/menu - Главное меню"),
         "language_changed": "Язык изменен на русский",
@@ -40,8 +43,11 @@ texts = {
                  "/start - Start bot\n"
                  "/help - Help\n"
                  "/fact - Random fact\n"
+                 "/add_reminder - Add reminder\n"
+                 "/delete_reminder - Delete reminder\n"
+                 "/update_reminder - Update reminder\n"
+                 "/list_reminders - List reminders\n"
                  "/language - Change language\n"
-                 "/set_time - Set schedule\n"
                  "/set_timezone - Set timezone\n"
                  "/menu - Main menu"),
         "language_changed": "Language changed to English",

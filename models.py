@@ -22,8 +22,9 @@ class Reminder(Base):
     __tablename__ = 'reminders'
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey('users.id'))
-    time = Column(String(5))  # "HH:MM"
+    time = Column(String(5))  # формат "HH:MM"
     active = Column(Boolean, default=True)
+    recurrence = Column(String(20), default=None)  # например, 'daily', 'weekly'
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
 
@@ -36,6 +37,7 @@ class Admin(Base):
     user_id = Column(Integer, unique=True)
 
 
+# Используем expire_on_commit=False для избежания проблем с отсоединёнными объектами
 engine = create_engine('sqlite:///bot_data.db')
 Base.metadata.create_all(engine)
-Session = sessionmaker(bind=engine)
+Session = sessionmaker(bind=engine, expire_on_commit=False)

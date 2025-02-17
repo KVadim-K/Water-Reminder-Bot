@@ -4,10 +4,10 @@ import threading
 import time
 import datetime
 import pytz
-from models import Session, User
+from models import Session, User, Reminder
 from utils import get_user, is_valid_time, error_handler
 from global_vars import logger, texts, bot, active_threads
-
+from scheduler import schedule_reminder, unschedule_reminder, reschedule_reminder
 
 @bot.message_handler(commands=['set_timezone'])
 @error_handler
@@ -49,7 +49,13 @@ def set_time_handler(message):
         if not user:
             user = User(chat_id=chat_id)
             session_db.add(user)
-        user.reminder_times = times
+        # Удаляем старые напоминания для пользователя
+        session_db.query(Reminder).filter_by(user_id=user.id).delete()
+        for t in times:
+            reminder = Reminder(user_id=user.id, time=t, active=True)
+            session_db.add(reminder)
+            session_db.flush()  # чтобы reminder.id заполнился
+            schedule_reminder(reminder)
         session_db.commit()
         bot.send_message(chat_id, texts[user.language]['time_updated'])
         logger.info(f"[set_time_handler] chat_id={chat_id}, новое расписание: {times}")
@@ -61,14 +67,18 @@ def reminder_loop(chat_id):
     logger.info(f"Reminder loop started for chat_id={chat_id}")
     while active_threads.get(chat_id, {}).get("running", False):
         try:
-            user = get_user(chat_id)
-            reminder_times = set(user.reminder_times)
-            timezone = pytz.timezone(user.timezone)
-            now = datetime.datetime.now(timezone).strftime("%H:%M")
-            last_sent = active_threads.get(chat_id, {}).get("last_sent")
-            if now in reminder_times and now != last_sent:
-                bot.send_message(chat_id, texts[user.language]["reminder"])
-                active_threads[chat_id]["last_sent"] = now
+            session_db = Session()
+            user = session_db.query(User).filter_by(chat_id=chat_id).first()
+            if user:
+                reminders = session_db.query(Reminder).filter_by(user_id=user.id, active=True).all()
+                reminder_times = {r.time for r in reminders}
+                timezone = pytz.timezone(user.timezone)
+                now = datetime.datetime.now(timezone).strftime("%H:%M")
+                last_sent = active_threads.get(chat_id, {}).get("last_sent")
+                if now in reminder_times and now != last_sent:
+                    bot.send_message(chat_id, texts[user.language]["reminder"])
+                    active_threads[chat_id]["last_sent"] = now
+            session_db.close()
             time.sleep(10)
         except Exception as e:
             logger.error(f"[reminder_loop] Ошибка: {str(e)}", exc_info=True)
@@ -88,3 +98,122 @@ def start_handler(message):
     thread = threading.Thread(target=reminder_loop, args=(chat_id,), daemon=True)
     thread.start()
     bot.send_message(chat_id, texts[user.language]['welcome'])
+
+
+# CRUD-команды для индивидуальных напоминаний
+
+@bot.message_handler(commands=['add_reminder'])
+@error_handler
+def add_reminder_handler(message):
+    """
+    Формат команды: /add_reminder HH:MM [recurrence]
+    recurrence (опционально): например, daily, weekly
+    """
+    chat_id = message.chat.id
+    args = message.text.split()[1:]
+    if len(args) < 1:
+        bot.send_message(chat_id, "Usage: /add_reminder HH:MM [recurrence]")
+        return
+    time_str = args[0]
+    recurrence = args[1] if len(args) > 1 else None
+    if not is_valid_time(time_str):
+        bot.send_message(chat_id, "Неверный формат времени. Используйте ЧЧ:ММ")
+        return
+    session_db = Session()
+    try:
+        user = session_db.query(User).filter_by(chat_id=chat_id).first()
+        if not user:
+            user = User(chat_id=chat_id)
+            session_db.add(user)
+            session_db.commit()
+        reminder = Reminder(user_id=user.id, time=time_str, recurrence=recurrence, active=True)
+        session_db.add(reminder)
+        session_db.commit()
+        schedule_reminder(reminder)
+        bot.send_message(chat_id, f"Напоминание добавлено с ID {reminder.id} на {time_str}" + (f" (recurrence: {recurrence})" if recurrence else ""))
+    finally:
+        session_db.close()
+
+
+@bot.message_handler(commands=['delete_reminder'])
+@error_handler
+def delete_reminder_handler(message):
+    """
+    Формат команды: /delete_reminder reminder_id
+    """
+    chat_id = message.chat.id
+    args = message.text.split()[1:]
+    if len(args) < 1:
+        bot.send_message(chat_id, "Usage: /delete_reminder reminder_id")
+        return
+    reminder_id = args[0]
+    session_db = Session()
+    try:
+        reminder = session_db.query(Reminder).filter_by(id=reminder_id).first()
+        if reminder:
+            unschedule_reminder(reminder.id)
+            session_db.delete(reminder)
+            session_db.commit()
+            bot.send_message(chat_id, f"Напоминание с ID {reminder_id} удалено.")
+        else:
+            bot.send_message(chat_id, f"Напоминание с ID {reminder_id} не найдено.")
+    finally:
+        session_db.close()
+
+
+@bot.message_handler(commands=['update_reminder'])
+@error_handler
+def update_reminder_handler(message):
+    """
+    Формат команды: /update_reminder reminder_id HH:MM [recurrence]
+    """
+    chat_id = message.chat.id
+    args = message.text.split()[1:]
+    if len(args) < 2:
+        bot.send_message(chat_id, "Usage: /update_reminder reminder_id HH:MM [recurrence]")
+        return
+    reminder_id = args[0]
+    new_time = args[1]
+    new_recurrence = args[2] if len(args) > 2 else None
+    if not is_valid_time(new_time):
+        bot.send_message(chat_id, "Неверный формат времени. Используйте ЧЧ:ММ")
+        return
+    session_db = Session()
+    try:
+        reminder = session_db.query(Reminder).filter_by(id=reminder_id).first()
+        if reminder:
+            reminder.time = new_time
+            reminder.recurrence = new_recurrence
+            session_db.commit()
+            reschedule_reminder(reminder)
+            bot.send_message(chat_id, f"Напоминание с ID {reminder_id} обновлено.")
+        else:
+            bot.send_message(chat_id, f"Напоминание с ID {reminder_id} не найдено.")
+    finally:
+        session_db.close()
+
+
+@bot.message_handler(commands=['list_reminders'])
+@error_handler
+def list_reminders_handler(message):
+    """
+    Команда: /list_reminders
+    Выводит список всех напоминаний пользователя.
+    """
+    chat_id = message.chat.id
+    session_db = Session()
+    try:
+        user = session_db.query(User).filter_by(chat_id=chat_id).first()
+        if user:
+            reminders = session_db.query(Reminder).filter_by(user_id=user.id).all()
+            if reminders:
+                response = "Ваши напоминания:\n"
+                for r in reminders:
+                    response += f"ID: {r.id}, Time: {r.time}, Recurrence: {r.recurrence}, Active: {r.active}\n"
+                bot.send_message(chat_id, response)
+            else:
+                bot.send_message(chat_id, "У вас нет напоминаний.")
+        else:
+            bot.send_message(chat_id, "Пользователь не найден.")
+    finally:
+        session_db.close()

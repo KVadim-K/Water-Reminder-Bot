@@ -8,7 +8,6 @@ import datetime
 from utils import get_user, error_handler
 from global_vars import texts, bot, logger, active_threads
 
-
 @bot.message_handler(commands=['fact'])
 @error_handler
 def fact_handler(message):
